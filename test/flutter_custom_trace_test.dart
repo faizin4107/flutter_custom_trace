@@ -9,6 +9,61 @@ void main() {
 
   const keys = ['file', 'value', 'payload', 'date'];
 
+  group('parse stack trace', () {
+    test('debug (JIT): file, line, column', () {
+      final trace = CustomTrace(StackTrace.fromString(
+          '#0      ClockingController.doClocking (package:oranhr/controller/clocking.dart:372:7)\n'
+          '#1      main (package:oranhr/main.dart:10:3)'));
+      expect(trace.fileName, 'clocking.dart');
+      expect(trace.lineNumber, 372);
+      expect(trace.columnNumber, 7);
+    });
+
+    test('release (AOT): tanpa column tidak throw', () {
+      final trace = CustomTrace(StackTrace.fromString(
+          '#0      ClockingController.doClocking (package:oranhr/controller/clocking.dart:372)\n'
+          '#1      main (package:oranhr/main.dart:10)'));
+      expect(trace.fileName, 'clocking.dart');
+      expect(trace.lineNumber, 372);
+      expect(trace.columnNumber, isNull);
+    });
+
+    test('release --split-debug-info / --obfuscate: tidak throw, file unknown', () {
+      final trace = CustomTrace(StackTrace.fromString(
+          '*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***\n'
+          'pid: 1, tid: 2, name DartWorker\n'
+          "build_id: '01ccddd15262bec90e711d549fe9064e'\n"
+          'isolate_dso_base: 2b76fe70000, vm_dso_base: 0\n'
+          '    #00 abs 000002b76febe1a3 virt 000000000004e1a3 _kDartIsolateSnapshotInstructions+0x1a1a3'));
+      expect(trace.fileName, 'unknown');
+      expect(trace.lineNumber, isNull);
+    });
+
+    test('nama file dengan angka', () {
+      final trace = CustomTrace(StackTrace.fromString(
+          '#0      foo (package:oranhr/api/orange_api_v2.dart:15)'));
+      expect(trace.fileName, 'orange_api_v2.dart');
+      expect(trace.lineNumber, 15);
+    });
+
+    test('trace kosong: tidak throw', () {
+      final trace = CustomTrace(StackTrace.fromString(''));
+      expect(trace.fileName, 'unknown');
+    });
+
+    test('release: saveTrace tetap tersimpan', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      CustomTrace(StackTrace.fromString('#0      foo (package:oranhr/controller/clocking.dart:372)'))
+          .saveTrace(value: 'x', payload: 'BSSID');
+      await Future<void>.delayed(Duration.zero);
+
+      final prefs = await SharedPreferences.getInstance();
+      final saved = jsonDecode(prefs.getStringList('debug_info')!.single);
+      expect(saved['file'], 'clocking.dart,line: 372');
+      expect(saved['payload'], 'BSSID');
+    });
+  });
+
   group('normalize', () {
     test('format standar tetap sama', () {
       final trace = CustomTrace(StackTrace.current);

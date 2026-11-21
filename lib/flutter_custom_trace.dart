@@ -14,15 +14,29 @@ class CustomTrace {
     _parseTrace();
   }
 
-  void _parseTrace() {
-    var traceString = _trace.toString().split('\n')[0]; // Get the first line of the stack trace
-    var indexOfFileName = traceString.indexOf(RegExp(r'[A-Za-z_]+\.dart'));
-    var fileInfo = traceString.substring(indexOfFileName);
-    var listOfInfos = fileInfo.split(':');
+  /// Nama file `.dart`, nomor baris, dan nomor kolom (opsional).
+  /// - debug (JIT):   `#0  foo (package:app/a.dart:12:5)`
+  /// - release (AOT): `#0  foo (package:app/a.dart:12)` (tanpa kolom)
+  static final RegExp _frameRegex = RegExp(r'([A-Za-z0-9_\-]+\.dart):(\d+)(?::(\d+))?');
 
-    fileName = listOfInfos[0];
-    lineNumber = int.parse(listOfInfos[1]);
-    columnNumber = int.parse(listOfInfos[2].replaceAll(')', ''));
+  /// Parsing stack trace yang tidak pernah throw, agar trace tetap tersimpan
+  /// di mode release. Jika lokasi tidak bisa dibaca (mis. build dengan
+  /// `--obfuscate --split-debug-info` yang hanya berisi alamat memori),
+  /// [fileName] diisi `unknown` dan [lineNumber]/[columnNumber] `null`.
+  void _parseTrace() {
+    try {
+      for (final line in _trace.toString().split('\n')) {
+        final match = _frameRegex.firstMatch(line);
+        if (match != null) {
+          fileName = match.group(1);
+          lineNumber = int.tryParse(match.group(2)!);
+          final column = match.group(3);
+          columnNumber = column == null ? null : int.tryParse(column);
+          return;
+        }
+      }
+    } catch (_) {}
+    fileName ??= 'unknown';
   }
 
   /// Simpan trace dengan format standar: file, value, payload, date.
