@@ -28,15 +28,43 @@ void main() {
       expect(trace.columnNumber, isNull);
     });
 
-    test('release --split-debug-info / --obfuscate: tidak throw, file unknown', () {
+    test('release --split-debug-info / --obfuscate: simpan penanda DWARF', () {
       final trace = CustomTrace(StackTrace.fromString(
           '*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***\n'
           'pid: 1, tid: 2, name DartWorker\n'
-          "build_id: '01ccddd15262bec90e711d549fe9064e'\n"
-          'isolate_dso_base: 2b76fe70000, vm_dso_base: 0\n'
-          '    #00 abs 000002b76febe1a3 virt 000000000004e1a3 _kDartIsolateSnapshotInstructions+0x1a1a3'));
-      expect(trace.fileName, 'unknown');
+          'os: android arch: arm64 comp: yes sim: no\n'
+          "build_id: '13c06b791d8f2766911c6d4b25f8b194'\n"
+          'isolate_dso_base: 7a00000000, vm_dso_base: 7a00000000\n'
+          'isolate_instructions: 7a00320000, vm_instructions: 7a00320000\n'
+          '    #00 abs 0000007a00b40000 virt 0000000000b40000 _kDartSnapshotText+0x820000\n'
+          '    #01 abs 0000007a00b3ff10 virt 0000000000b3ff10 _kDartSnapshotText+0x81ff10\n'
+          '    #02 abs 0000007a00a00000 virt 0000000000a00000 _kDartSnapshotText+0x6e0000'));
+      expect(trace.fileName, 'dwarf:build_id=13c06b791d8f2766911c6d4b25f8b194;arch=arm64;virt=b40000,b3ff10');
       expect(trace.lineNumber, isNull);
+      expect(trace.dwarfLocation!.virtualAddresses, [0xb40000, 0xb3ff10]);
+    });
+
+    test('DWARF tanpa virt: alamat dihitung dari abs - isolate_dso_base', () {
+      final loc = DwarfLocation.fromStackTrace(
+          "build_id: 'abc123'\n"
+          'isolate_dso_base: 1ab527b0000, vm_dso_base: 0\n'
+          '    #00 abs 000001ab52819ac2 _kDartSnapshotText+0x35ac2');
+      expect(loc!.virtualAddresses, [0x69ac2]);
+      expect(loc.arch, isNull);
+    });
+
+    test('penanda DWARF bisa dibaca ulang (round trip)', () {
+      const loc = DwarfLocation(buildId: 'abc123', arch: 'arm', virtualAddresses: [0x10, 0xff]);
+      final back = DwarfLocation.fromToken('${loc.toToken()},line: null')!;
+      expect(back.buildId, 'abc123');
+      expect(back.arch, 'arm');
+      expect(back.virtualAddresses, [0x10, 0xff]);
+    });
+
+    test('stack trace tanpa lokasi apa pun: file unknown', () {
+      final trace = CustomTrace(StackTrace.fromString('<asynchronous suspension>'));
+      expect(trace.fileName, 'unknown');
+      expect(trace.dwarfLocation, isNull);
     });
 
     test('nama file dengan angka', () {

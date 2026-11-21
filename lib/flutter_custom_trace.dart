@@ -2,12 +2,22 @@ import 'dart:convert';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'src/dwarf_location.dart';
+
+export 'src/dwarf_location.dart';
+
 class CustomTrace {
   final StackTrace _trace;
 
   String? fileName;
   int? lineNumber;
   int? columnNumber;
+
+  /// Terisi jika stack trace berformat DWARF (build `--split-debug-info` /
+  /// `--obfuscate`). Pada kondisi ini [fileName] berisi penanda
+  /// `dwarf:build_id=...;arch=...;virt=...` yang bisa diterjemahkan ke
+  /// file/baris dengan `dart run flutter_custom_trace:symbolize`.
+  DwarfLocation? dwarfLocation;
   // List<String> listDebugInfo = [];
 
   CustomTrace(this._trace) {
@@ -20,12 +30,15 @@ class CustomTrace {
   static final RegExp _frameRegex = RegExp(r'([A-Za-z0-9_\-]+\.dart):(\d+)(?::(\d+))?');
 
   /// Parsing stack trace yang tidak pernah throw, agar trace tetap tersimpan
-  /// di mode release. Jika lokasi tidak bisa dibaca (mis. build dengan
-  /// `--obfuscate --split-debug-info` yang hanya berisi alamat memori),
-  /// [fileName] diisi `unknown` dan [lineNumber]/[columnNumber] `null`.
+  /// di mode release.
+  /// - debug / release biasa: [fileName], [lineNumber], [columnNumber]
+  /// - release `--split-debug-info` / `--obfuscate`: [dwarfLocation], dan
+  ///   [fileName] berisi penanda DWARF ([lineNumber]/[columnNumber] `null`)
+  /// - selain itu: [fileName] = `unknown`
   void _parseTrace() {
     try {
-      for (final line in _trace.toString().split('\n')) {
+      final trace = _trace.toString();
+      for (final line in trace.split('\n')) {
         final match = _frameRegex.firstMatch(line);
         if (match != null) {
           fileName = match.group(1);
@@ -35,6 +48,8 @@ class CustomTrace {
           return;
         }
       }
+      dwarfLocation = DwarfLocation.fromStackTrace(trace);
+      fileName = dwarfLocation?.toToken();
     } catch (_) {}
     fileName ??= 'unknown';
   }

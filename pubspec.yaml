@@ -9,8 +9,13 @@ environment:
 
 dependencies:
   shared_preferences: ^2.5.3
+  # Hanya dipakai tool CLI bin/symbolize.dart (tidak ikut ke dalam APK)
+  native_stack_traces: ^0.6.1
   flutter:
     sdk: flutter
+
+executables:
+  symbolize:
 
 dev_dependencies:
   flutter_test:
