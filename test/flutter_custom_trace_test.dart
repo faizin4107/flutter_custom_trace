@@ -34,6 +34,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   setUp(CustomTrace.resetEnabled);
   _enabledTests();
+  _redactTests();
 
   const keys = ['file', 'value', 'payload', 'date'];
 
@@ -255,6 +256,82 @@ void main() {
       await CustomTrace(StackTrace.current).saveError(jsonError: 'bukan json');
       await CustomTrace(StackTrace.current).saveTrace(value: 'sesudah', payload: 'p');
       expect((await _saved()).map((e) => e['value']), ['bukan json', 'sesudah']);
+    });
+  });
+}
+
+void _redactTests() {
+  group('redact (x-orange-token / x-orange-signature)', () {
+    const token = '1795661511-9ab2a5f69bf6e3eab7d9f416bcc46c75da3000';
+    const masked = '179566…3000';
+
+    test('Map Dart toString', () {
+      final out = CustomTrace.redact('{success: true, x-orange-token: $token, userId: SPS1}');
+      expect(out, '{success: true, x-orange-token: $masked, userId: SPS1}');
+    });
+
+    test('JSON dan JSON ter-escape', () {
+      expect(CustomTrace.redact('{"x-orange-signature":"$token","a":1}'),
+          '{"x-orange-signature":"$masked","a":1}');
+      expect(CustomTrace.redact(r'{\"x-orange-token\":\"' '$token' r'\"}'),
+          r'{\"x-orange-token\":\"' '$masked' r'\"}');
+    });
+
+    test('query string & huruf besar', () {
+      expect(CustomTrace.redact('a=1&X-Orange-Token=$token&b=2'), 'a=1&X-Orange-Token=$masked&b=2');
+    });
+
+    test('nilai pendek → ***, teks lain tidak berubah, idempoten', () {
+      expect(CustomTrace.redact('x-orange-token: abc123'), 'x-orange-token: ***');
+      expect(CustomTrace.redact('statusCode: 00, message: ok'), 'statusCode: 00, message: ok');
+      final once = CustomTrace.redact('x-orange-token: $token');
+      expect(CustomTrace.redact(once), once);
+      expect(CustomTrace.redact('x-orange-token: ***'), 'x-orange-token: ***');
+    });
+
+    test('password selalu *****, apa pun bentuk & panjangnya', () {
+      expect(CustomTrace.redact('{userId: SPS1, password: Rahasia#2026}'), '{userId: SPS1, password: *****}');
+      expect(CustomTrace.redact('{"new_password":"abc","old_password":"x1"}'),
+          '{"new_password":"*****","old_password":"*****"}');
+      expect(CustomTrace.redact('passwordOld=qwertyuiopasdfgh&passwordConfirm=z'),
+          'passwordOld=*****&passwordConfirm=*****');
+      expect(CustomTrace.redact('password: *****'), 'password: *****');
+    });
+
+    test('kredensial lain disamarkan sebagian', () {
+      expect(CustomTrace.redact('fcm_token: $token'), 'fcm_token: $masked');
+      expect(CustomTrace.redact('secret_key: $token'), 'secret_key: $masked');
+      expect(CustomTrace.redact('"x-ai-apikey":"$token"'), '"x-ai-apikey":"$masked"');
+      expect(CustomTrace.redact('Authorization: Bearer $token'), 'Authorization: Bearer $masked');
+    });
+
+    test('bukan password/kredensial tidak tersentuh', () {
+      expect(CustomTrace.redact('by_pass: true, bypass_bssid: 70:2E:22'), 'by_pass: true, bypass_bssid: 70:2E:22');
+      expect(CustomTrace.redact('statusCode: 00, userId: SPS1501002'), 'statusCode: 00, userId: SPS1501002');
+    });
+
+    test('daftar kunci bisa diatur', () {
+      final oldSensitive = CustomTrace.sensitiveKeys;
+      final oldPassword = CustomTrace.passwordKeys;
+      addTearDown(() {
+        CustomTrace.sensitiveKeys = oldSensitive;
+        CustomTrace.passwordKeys = oldPassword;
+      });
+      CustomTrace.sensitiveKeys = ['pin'];
+      CustomTrace.passwordKeys = [];
+      expect(CustomTrace.redact('pin: rahasia-panjang-sekali'), 'pin: rahasi…kali');
+      expect(CustomTrace.redact('x-orange-token: $token'), 'x-orange-token: $token');
+      expect(CustomTrace.redact('password: abc'), 'password: abc');
+    });
+
+    test('saveTrace menyimpan versi tersamar (value & payload)', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      await CustomTrace(StackTrace.current)
+          .saveTrace(value: {'x-orange-token': token, 'ok': true}, payload: 'x-orange-signature=$token');
+      final saved = (await _saved()).single;
+      expect(saved['value'], '{x-orange-token: $masked, ok: true}');
+      expect(saved['payload'], 'x-orange-signature=$masked');
+      expect(jsonEncode(saved), isNot(contains(token)));
     });
   });
 }

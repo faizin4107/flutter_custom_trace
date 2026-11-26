@@ -62,6 +62,55 @@ class CustomTrace {
   /// Panjang maksimum `value` per catatan (karakter); sisanya dipotong.
   static int maxValueLength = 4000;
 
+  /// Bagian nama kunci password (tidak peka huruf besar/kecil; cocok sebagai
+  /// bagian nama, mis. `new_password`, `passwordOld`). Nilainya diganti total
+  /// menjadi `*****` (panjang aslinya pun tidak terlihat).
+  static List<String> passwordKeys = ['password', 'passwd', 'pwd'];
+
+  /// Bagian nama kunci kredensial lain (mis. `x-orange-token`, `fcm_token`,
+  /// `x-orange-signature`, `secret_key`, `x-ai-apikey`). Nilainya disamarkan
+  /// sebagian: 6 karakter awal + `…` + 4 akhir. Dulu token/signature
+  /// tersimpan utuh di `debug_info` dan ikut terkirim lewat email Debug Info.
+  static List<String> sensitiveKeys = [
+    'token',
+    'signature',
+    'secret',
+    'apikey',
+    'api_key',
+    'authorization',
+    'nonce',
+  ];
+
+  /// Samarkan nilai [passwordKeys] (`*****`) dan [sensitiveKeys] (sebagian,
+  /// mis. `179566…711d`; nilai ≤ 12 karakter menjadi `***`) di [text].
+  /// Permanen (tidak bisa dikembalikan). Mengenali `key: v` (Map Dart),
+  /// `"key":"v"` (JSON, termasuk yang di-escape), `key=v` (query string) dan
+  /// `Authorization: Bearer v`. Aman dipanggil berulang.
+  static String redact(String text) {
+    if (text.isEmpty) return text;
+    final out = _redactKeys(text, passwordKeys, (_) => '*****');
+    return _redactKeys(out, sensitiveKeys, _mask);
+  }
+
+  static String _redactKeys(String text, List<String> keyList, String Function(String) mask) {
+    final keys = keyList.where((k) => k.isNotEmpty).map(RegExp.escape).join('|');
+    if (keys.isEmpty) return text;
+    final re = RegExp(
+      '([A-Za-z0-9_\\-]*(?:$keys)[A-Za-z0-9_\\-]*(?:\\\\?["\'])?\\s*[:=]\\s*(?:\\\\?["\'])?(?:Bearer\\s+)?)'
+      '([^\\s,;&}\\]"\'\\\\]+)',
+      caseSensitive: false,
+    );
+    return text.replaceAllMapped(re, (m) => '${m[1]}${mask(m[2]!)}');
+  }
+
+  static final RegExp _alreadyMasked = RegExp(r'^\*+$');
+
+  static String _mask(String value) {
+    if (_alreadyMasked.hasMatch(value) || value.contains('…')) return value; // sudah disamarkan
+    if (value.length <= 12) return '***';
+    return '${value.substring(0, 6)}…${value.substring(value.length - 4)}';
+  }
+
   /// Antrean penulisan: `debug_info` dibaca-ubah-tulis, sehingga penyimpanan
   /// yang berjalan bersamaan dulu bisa saling menimpa (catatan hilang).
   static Future<void> _queue = Future<void>.value();
@@ -180,10 +229,11 @@ class CustomTrace {
 
     final value = data.containsKey('value') ? data['value'] : data['message'];
 
+    // Disamarkan sebelum disimpan / ditampilkan (lihat [redact]).
     return jsonEncode({
       'file': data['file']?.toString() ?? '$fileName,line: $lineNumber',
-      'value': value?.toString() ?? '',
-      'payload': data['payload']?.toString() ?? '',
+      'value': redact(value?.toString() ?? ''),
+      'payload': redact(data['payload']?.toString() ?? ''),
       'date': data['date']?.toString() ?? orangeDateTime(),
     });
   }
