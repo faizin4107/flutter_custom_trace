@@ -1,11 +1,39 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter_custom_trace/flutter_custom_trace.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
+import 'package:shared_preferences_platform_interface/types.dart';
+
+/// Store yang selalu gagal (mis. plugin belum siap / isolate latar).
+class _FailingStore extends SharedPreferencesStorePlatform {
+  Never _fail() => throw StateError('store rusak');
+  @override
+  Future<bool> clear() async => _fail();
+  @override
+  Future<Map<String, Object>> getAll() async => _fail();
+  @override
+  Future<Map<String, Object>> getAllWithParameters(GetAllParameters parameters) async => _fail();
+  @override
+  Future<bool> remove(String key) async => _fail();
+  @override
+  Future<bool> setValue(String valueType, String key, Object value) async => _fail();
+}
+
+Future<List<Map<String, dynamic>>> _saved() async {
+  final prefs = await SharedPreferences.getInstance();
+  return [
+    for (final e in prefs.getStringList('debug_info') ?? const <String>[])
+      Map<String, dynamic>.from(jsonDecode(e) as Map),
+  ];
+}
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  setUp(CustomTrace.resetEnabled);
+  _enabledTests();
 
   const keys = ['file', 'value', 'payload', 'date'];
 
@@ -155,4 +183,126 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.getStringList('debug_info'), isNull);
   });
+
+  group('batas & ketahanan', () {
+    setUp(() {
+      CustomTrace.maxDebugInfo = 200;
+      CustomTrace.maxValueLength = 4000;
+    });
+    tearDown(() {
+      CustomTrace.maxDebugInfo = 200;
+      CustomTrace.maxValueLength = 4000;
+    });
+
+    test('debug_info dibatasi maxDebugInfo, catatan terlama dibuang', () async {
+      SharedPreferences.setMockInitialValues({
+        'is_debug': true,
+        'debug_info': [for (var i = 0; i < 5; i++) jsonEncode({'value': 'lama$i'})],
+      });
+      CustomTrace.maxDebugInfo = 3;
+      await CustomTrace(StackTrace.current).saveTrace(value: 'baru', payload: 'p');
+
+      final saved = await _saved();
+      expect(saved.map((e) => e['value']), ['lama3', 'lama4', 'baru']);
+    });
+
+    test('value panjang dipotong maxValueLength', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      CustomTrace.maxValueLength = 10;
+      await CustomTrace(StackTrace.current).saveTrace(value: 'x' * 25, payload: 'p');
+
+      final value = (await _saved()).single['value'] as String;
+      expect(value, startsWith('${'x' * 10}…'));
+      expect(value, contains('dipotong 15 karakter'));
+    });
+
+    test('penyimpanan bersamaan tidak saling menimpa', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      await Future.wait([
+        for (var i = 0; i < 20; i++) CustomTrace(StackTrace.current).saveTrace(value: 'v$i', payload: 'p'),
+      ]);
+
+      final values = (await _saved()).map((e) => e['value']).toList();
+      expect(values, [for (var i = 0; i < 20; i++) 'v$i']);
+    });
+
+    test('SharedPreferences gagal: tidak ada error yang lolos', () async {
+      final original = SharedPreferencesStorePlatform.instance;
+      SharedPreferences.resetStatic();
+      SharedPreferencesStorePlatform.instance = _FailingStore();
+      addTearDown(() {
+        SharedPreferencesStorePlatform.instance = original;
+        SharedPreferences.resetStatic();
+      });
+
+      final uncaught = <Object>[];
+      await runZonedGuarded(() async {
+        await CustomTrace(StackTrace.current).saveTrace(value: 'x', payload: 'p');
+        await CustomTrace(StackTrace.current).saveError(jsonError: '{"value":"y"}');
+        await Future<void>.delayed(Duration.zero);
+      }, (e, _) => uncaught.add(e));
+      expect(uncaught, isEmpty);
+    });
+
+    test('value yang toString-nya melempar tetap tidak error', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      await CustomTrace(StackTrace.current).saveTrace(value: _BadToString(), payload: 'p');
+      expect((await _saved()).single['value'], contains('toString gagal'));
+    });
+
+    test('jsonError bukan JSON tetap tersimpan dan antrean berlanjut', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      await CustomTrace(StackTrace.current).saveError(jsonError: 'bukan json');
+      await CustomTrace(StackTrace.current).saveTrace(value: 'sesudah', payload: 'p');
+      expect((await _saved()).map((e) => e['value']), ['bukan json', 'sesudah']);
+    });
+  });
+}
+
+void _enabledTests() {
+  group('aktif / nonaktif (setEnabled)', () {
+    tearDown(CustomTrace.resetEnabled);
+
+    test('default belum diatur (null) → perilaku lama mengikuti is_debug', () {
+      expect(CustomTrace.enabled, isNull);
+    });
+
+    test('nonaktif: tidak mencatat walau is_debug true', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': true});
+      CustomTrace.setEnabled(false);
+      await CustomTrace(StackTrace.current).saveTrace(value: 'x', payload: 'p');
+      await CustomTrace(StackTrace.current).saveError(jsonError: '{"value":"y"}');
+      expect(await _saved(), isEmpty);
+    });
+
+    test('aktif: mencatat walau is_debug tidak ada / false', () async {
+      SharedPreferences.setMockInitialValues({'is_debug': false});
+      CustomTrace.setEnabled(true);
+      await CustomTrace(StackTrace.current).saveTrace(value: 'x', payload: 'p');
+      expect((await _saved()).single['value'], 'x');
+    });
+
+    test('dinonaktifkan selagi mengantre → catatan dibatalkan', () async {
+      SharedPreferences.setMockInitialValues({});
+      CustomTrace.setEnabled(true);
+      final pending = CustomTrace(StackTrace.current).saveTrace(value: 'x', payload: 'p');
+      CustomTrace.setEnabled(false);
+      await pending;
+      expect(await _saved(), isEmpty);
+    });
+
+    test('nonaktif tidak menghapus data debug_info yang sudah ada', () async {
+      SharedPreferences.setMockInitialValues({
+        'debug_info': [jsonEncode({'value': 'lama'})],
+      });
+      CustomTrace.setEnabled(false);
+      await CustomTrace(StackTrace.current).saveTrace(value: 'baru', payload: 'p');
+      expect((await _saved()).map((e) => e['value']), ['lama']);
+    });
+  });
+}
+
+class _BadToString {
+  @override
+  String toString() => throw StateError('rusak');
 }
